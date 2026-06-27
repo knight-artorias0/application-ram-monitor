@@ -1,7 +1,7 @@
 pkgbase = appmon
 	pkgname = appmon
 	pkgdesc = Terminal monitor that aggregates RAM and CPU usage per application
-	pkgver = 0.1.0
+	pkgver = 0.2.0
 	pkgrel = 1
 	url = https://github.com/knight-artorias0/application-ram-monitor
 	arch = any
@@ -13,5 +13,5 @@ pkgbase = appmon
 	makedepends = python-setuptools
 	makedepends = python-wheel
 	makedepends = git
-	source = appmon::git+https://github.com/knight-artorias0/application-ram-monitor.git#tag=v0.1.0?signed
+	source = appmon::git+https://github.com/knight-artorias0/application-ram-monitor.git#tag=v0.2.0?signed
 	sha256sums = SKIP

@@ -16,8 +16,9 @@ COLUMN_SPECS = (
     ("Application", "application"),
     ("RAM", "ram"),
     ("CPU%", "cpu"),
+    ("GPU%", "gpu"),
+    ("Net", "net"),
     ("Procs", "procs"),
-    ("Source", "source"),
 )
 
 
@@ -40,9 +41,34 @@ def format_percent(value: float) -> str:
     return f"{value:5.1f}%"
 
 
+def format_bitrate(bps: float) -> str:
+    if bps <= 0:
+        return "0 bps"
+    units = ("bps", "Kbps", "Mbps", "Gbps")
+    value = float(bps)
+    unit = units[0]
+    for unit in units:
+        if value < 1000 or unit == units[-1]:
+            break
+        value /= 1000
+    if unit == "bps":
+        return f"{int(value)} {unit}"
+    return f"{value:.1f} {unit}"
+
+
+def format_network(group: AppGroup, accounting: bool) -> str:
+    if accounting:
+        return f"↓{format_bitrate(group.net_down_bps)} ↑{format_bitrate(group.net_up_bps)}"
+    if group.socket_count > 0:
+        return f"{group.socket_count} sock"
+    return "-"
+
+
 class SortKey(str, Enum):
     RAM = "ram"
     CPU = "cpu"
+    GPU = "gpu"
+    NET = "net"
     NAME = "name"
     PROCS = "procs"
 
@@ -52,8 +78,22 @@ class SummaryBar(Static):
         total = format_bytes(snapshot.total_mem_bytes)
         used = format_bytes(snapshot.used_mem_bytes)
         cpu = format_percent(snapshot.total_cpu_percent)
-        fallback = " (RSS fallback)" if snapshot.pss_fallback else ""
-        self.update(f"Memory: {used} / {total}   CPU: {cpu}{fallback}")
+        parts = [f"Memory: {used} / {total}", f"CPU: {cpu}"]
+        if snapshot.gpu_available:
+            parts.append(f"GPU: {format_percent(snapshot.total_gpu_percent)}")
+        if snapshot.network_accounting:
+            parts.append(
+                f"Net: ↓{format_bitrate(snapshot.total_net_down_bps)} "
+                f"↑{format_bitrate(snapshot.total_net_up_bps)}"
+            )
+        else:
+            parts.append(
+                f"Net: ↓{format_bitrate(snapshot.total_net_down_bps)} "
+                f"↑{format_bitrate(snapshot.total_net_up_bps)} (system)"
+            )
+        if snapshot.pss_fallback:
+            parts.append("(RSS fallback)")
+        self.update("   ".join(parts))
 
 
 class AppMonitorApp(App):
@@ -87,7 +127,7 @@ class AppMonitorApp(App):
     }
 
     #detail {
-        height: 8;
+        height: 9;
         padding: 0 1;
         background: $panel;
         border-top: solid $primary;
@@ -110,8 +150,11 @@ class AppMonitorApp(App):
         self.filter_text = ""
         self.selected_group: AppGroup | None = None
         self._focused_row_key: str | None = None
+        self._display_order: list[str] = []
         self._groups_by_key: dict[str, AppGroup] = {}
         self._refreshing_table = False
+        self._network_accounting = False
+        self._gpu_available = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -119,26 +162,36 @@ class AppMonitorApp(App):
         yield SummaryBar("Collecting metrics...", id="summary")
         with Container(id="main"):
             yield DataTable(id="apps", zebra_stripes=True, cursor_type="row")
-            yield Static("Select an application and press Enter to inspect processes.", id="detail")
+            yield Static("Select an application with arrow keys to inspect processes.", id="detail")
         yield Footer()
 
     def on_mount(self) -> None:
         table = self.query_one("#apps", DataTable)
         table.add_columns(*COLUMN_SPECS)
         self.set_interval(self.interval, self.refresh_metrics)
-        self.refresh_metrics()
+        snapshot = self.collector.sample()
+        self.query_one("#summary", SummaryBar).update_snapshot(snapshot)
+        self._render_table(snapshot, reorder=True)
+
+    def _group_sort_value(self, group: AppGroup) -> float | str | int:
+        if self.sort_key == SortKey.CPU:
+            return group.cpu_percent
+        if self.sort_key == SortKey.GPU:
+            return group.gpu_percent
+        if self.sort_key == SortKey.NET:
+            return group.net_down_bps + group.net_up_bps
+        if self.sort_key == SortKey.NAME:
+            return group.display_name.lower()
+        if self.sort_key == SortKey.PROCS:
+            return group.process_count
+        return group.pss_bytes
 
     def _sorted_groups(self, groups: list[AppGroup]) -> list[AppGroup]:
-        def key_fn(group: AppGroup) -> float | str | int:
-            if self.sort_key == SortKey.CPU:
-                return group.cpu_percent
-            if self.sort_key == SortKey.NAME:
-                return group.display_name.lower()
-            if self.sort_key == SortKey.PROCS:
-                return group.process_count
-            return group.pss_bytes
-
-        return sorted(groups, key=key_fn, reverse=self.sort_reverse)
+        return sorted(
+            groups,
+            key=lambda group: (self._group_sort_value(group), group.display_name.lower()),
+            reverse=self.sort_reverse,
+        )
 
     def _filtered_groups(self, groups: list[AppGroup]) -> list[AppGroup]:
         if not self.filter_text:
@@ -149,6 +202,19 @@ class AppMonitorApp(App):
             for group in groups
             if needle in group.display_name.casefold() or needle in group.key.casefold()
         ]
+
+    def _sync_display_order(self, filtered: list[AppGroup], *, reorder: bool) -> list[AppGroup]:
+        filtered_by_key = {group.key: group for group in filtered}
+        if reorder or not self._display_order:
+            self._display_order = [group.key for group in self._sorted_groups(filtered)]
+        else:
+            self._display_order = [
+                key for key in self._display_order if key in filtered_by_key
+            ]
+            for group in filtered:
+                if group.key not in self._display_order:
+                    self._display_order.append(group.key)
+        return [filtered_by_key[key] for key in self._display_order if key in filtered_by_key]
 
     def _capture_focused_key(self, table: DataTable) -> str | None:
         if self._focused_row_key:
@@ -167,12 +233,20 @@ class AppMonitorApp(App):
     def _ordered_row_keys(self, table: DataTable) -> list[str]:
         return [str(row.key.value) for row in table.ordered_rows]
 
+    def _gpu_cell(self, group: AppGroup) -> str:
+        if not self._gpu_available:
+            return "-"
+        if group.gpu_mem_bytes > 0 and group.gpu_percent <= 0:
+            return f"{format_bytes(group.gpu_mem_bytes)}"
+        return format_percent(group.gpu_percent)
+
     def _update_group_row(self, table: DataTable, group: AppGroup) -> None:
         table.update_cell(group.key, "application", group.display_name)
         table.update_cell(group.key, "ram", format_bytes(group.pss_bytes))
         table.update_cell(group.key, "cpu", format_percent(group.cpu_percent))
+        table.update_cell(group.key, "gpu", self._gpu_cell(group))
+        table.update_cell(group.key, "net", format_network(group, self._network_accounting))
         table.update_cell(group.key, "procs", str(group.process_count))
-        table.update_cell(group.key, "source", group.source)
 
     def _update_detail_panel(self, focused_key: str | None, visible: list[AppGroup]) -> None:
         detail = self.query_one("#detail", Static)
@@ -193,8 +267,9 @@ class AppMonitorApp(App):
                 group.display_name,
                 format_bytes(group.pss_bytes),
                 format_percent(group.cpu_percent),
+                self._gpu_cell(group),
+                format_network(group, self._network_accounting),
                 str(group.process_count),
-                group.source,
                 key=group.key,
             )
 
@@ -208,14 +283,18 @@ class AppMonitorApp(App):
 
         self.call_after_refresh(finish_rebuild)
 
-    def _render_table(self, snapshot: SystemSnapshot) -> None:
+    def _render_table(self, snapshot: SystemSnapshot, *, reorder: bool = False) -> None:
         table = self.query_one("#apps", DataTable)
         focused_key = self._capture_focused_key(table)
         if focused_key is not None:
             self._focused_row_key = focused_key
 
         self._groups_by_key = {group.key: group for group in snapshot.groups}
-        visible = self._sorted_groups(self._filtered_groups(snapshot.groups))
+        self._network_accounting = snapshot.network_accounting
+        self._gpu_available = snapshot.gpu_available
+
+        filtered = self._filtered_groups(snapshot.groups)
+        visible = self._sync_display_order(filtered, reorder=reorder)
         desired_keys = [group.key for group in visible]
         current_keys = self._ordered_row_keys(table)
 
@@ -230,12 +309,28 @@ class AppMonitorApp(App):
     def _show_detail(self, group: AppGroup) -> None:
         self.selected_group = group
         lines = [
-            f"{group.display_name} ({group.key}) — {group.process_count} process(es), source: {group.source}",
-            "PID      RAM        CPU%     COMM",
+            (
+                f"{group.display_name} ({group.key}) — {group.process_count} process(es), "
+                f"source: {group.source}"
+            ),
+            "PID      RAM        CPU%     GPU%     Net                  COMM",
         ]
         for proc in sorted(group.processes, key=lambda p: p.pss_bytes, reverse=True)[:12]:
+            net = format_network(
+                AppGroup(
+                    key=group.key,
+                    display_name=group.display_name,
+                    source=group.source,
+                    net_down_bps=proc.net_down_bps,
+                    net_up_bps=proc.net_up_bps,
+                    socket_count=proc.socket_count,
+                ),
+                self._network_accounting,
+            )
+            gpu = format_percent(proc.gpu_percent) if self._gpu_available else "-"
             lines.append(
-                f"{proc.pid:<8} {format_bytes(proc.pss_bytes):>10} {format_percent(proc.cpu_percent):>8}  {proc.comm}"
+                f"{proc.pid:<8} {format_bytes(proc.pss_bytes):>10} "
+                f"{format_percent(proc.cpu_percent):>8} {gpu:>8} {net:<20} {proc.comm}"
             )
         if len(group.processes) > 12:
             lines.append(f"... and {len(group.processes) - 12} more")
@@ -244,7 +339,7 @@ class AppMonitorApp(App):
     def refresh_metrics(self) -> None:
         snapshot = self.collector.sample()
         self.query_one("#summary", SummaryBar).update_snapshot(snapshot)
-        self._render_table(snapshot)
+        self._render_table(snapshot, reorder=False)
 
     def action_search(self) -> None:
         search = self.query_one("#search", Input)
@@ -256,27 +351,26 @@ class AppMonitorApp(App):
         search.value = ""
         search.remove_class("visible")
         self.filter_text = ""
-        self.refresh_metrics()
+        snapshot = self.collector.sample()
+        self._render_table(snapshot, reorder=True)
         self.query_one("#apps", DataTable).focus()
 
     def action_cycle_sort(self) -> None:
-        order = [SortKey.RAM, SortKey.CPU, SortKey.NAME, SortKey.PROCS]
+        order = [SortKey.RAM, SortKey.CPU, SortKey.GPU, SortKey.NET, SortKey.NAME, SortKey.PROCS]
         idx = order.index(self.sort_key)
         self.sort_key = order[(idx + 1) % len(order)]
-        if self.sort_key in (SortKey.RAM, SortKey.CPU, SortKey.PROCS):
-            self.sort_reverse = True
-        else:
-            self.sort_reverse = False
+        self.sort_reverse = self.sort_key != SortKey.NAME
         self.notify(f"Sorted by {self.sort_key.value}")
         snapshot = self.collector.sample()
-        self._render_table(snapshot)
+        self._render_table(snapshot, reorder=True)
 
     @on(Input.Submitted, "#search")
     def on_search_submitted(self, event: Input.Submitted) -> None:
         self.filter_text = event.value.strip()
         event.input.remove_class("visible")
         self.query_one("#apps", DataTable).focus()
-        self.refresh_metrics()
+        snapshot = self.collector.sample()
+        self._render_table(snapshot, reorder=True)
 
     @on(DataTable.RowHighlighted)
     def on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
