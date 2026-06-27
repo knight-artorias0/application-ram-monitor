@@ -21,7 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version="%(prog)s 0.3.2",
+        version="%(prog)s 0.3.3",
     )
     return parser
 
