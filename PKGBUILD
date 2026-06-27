@@ -15,11 +15,15 @@ options=(!debug)
 
 build() {
   cd "$startdir"
+  rm -rf dist build *.egg-info
   python -m build --wheel --no-isolation
 }
 
 package() {
   cd "$startdir"
+  # Leftover pkg/ files from a failed makepkg run can block reinstall.
+  rm -rf "$pkgdir"
+  mkdir -p "$pkgdir"
   python -m installer --destdir="$pkgdir" dist/*.whl
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }

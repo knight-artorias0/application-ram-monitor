@@ -42,6 +42,19 @@ makepkg -si
 sudo pacman -R appmon
 ```
 
+If a rebuild fails with `File already exists` in `pkg/`, clean and retry:
+
+```bash
+rm -rf pkg/ src/ dist/ build/ *.egg-info *.pkg.tar.zst
+makepkg -si
+```
+
+Or in one step:
+
+```bash
+makepkg -Cfi
+```
+
 ### From the AUR (once published)
 
 ```bash
