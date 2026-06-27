@@ -7,10 +7,18 @@ from enum import Enum
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Vertical
+from textual.containers import Container
 from textual.widgets import DataTable, Footer, Header, Input, Static
 
-from appmon.metrics import AppGroup, MetricsCollector, ProcessSample, SystemSnapshot
+from appmon.metrics import AppGroup, MetricsCollector, SystemSnapshot
+
+COLUMN_SPECS = (
+    ("Application", "application"),
+    ("RAM", "ram"),
+    ("CPU%", "cpu"),
+    ("Procs", "procs"),
+    ("Source", "source"),
+)
 
 
 def format_bytes(num_bytes: int) -> str:
@@ -116,7 +124,7 @@ class AppMonitorApp(App):
 
     def on_mount(self) -> None:
         table = self.query_one("#apps", DataTable)
-        table.add_columns("Application", "RAM", "CPU%", "Procs", "Source")
+        table.add_columns(*COLUMN_SPECS)
         self.set_interval(self.interval, self.refresh_metrics)
         self.refresh_metrics()
 
@@ -142,44 +150,82 @@ class AppMonitorApp(App):
             if needle in group.display_name.casefold() or needle in group.key.casefold()
         ]
 
+    def _capture_focused_key(self, table: DataTable) -> str | None:
+        if self._focused_row_key:
+            return self._focused_row_key
+        if table.row_count == 0:
+            return None
+        try:
+            coordinate = table.cursor_coordinate
+            if table.is_valid_coordinate(coordinate):
+                cell_key = table.coordinate_to_cell_key(coordinate)
+                return str(cell_key.row_key.value)
+        except Exception:
+            return None
+        return None
+
+    def _ordered_row_keys(self, table: DataTable) -> list[str]:
+        return [str(row.key.value) for row in table.ordered_rows]
+
+    def _update_group_row(self, table: DataTable, group: AppGroup) -> None:
+        table.update_cell(group.key, "application", group.display_name)
+        table.update_cell(group.key, "ram", format_bytes(group.pss_bytes))
+        table.update_cell(group.key, "cpu", format_percent(group.cpu_percent))
+        table.update_cell(group.key, "procs", str(group.process_count))
+        table.update_cell(group.key, "source", group.source)
+
+    def _update_detail_panel(self, focused_key: str | None, visible: list[AppGroup]) -> None:
+        detail = self.query_one("#detail", Static)
+        if focused_key and focused_key in self._groups_by_key:
+            self._show_detail(self._groups_by_key[focused_key])
+        elif not visible:
+            detail.update("No matching applications.")
+        elif focused_key is None:
+            detail.update("Select an application with arrow keys to inspect processes.")
+        else:
+            detail.update("Selected application is no longer visible.")
+
+    def _rebuild_table(self, table: DataTable, visible: list[AppGroup], focused_key: str | None) -> None:
+        self._refreshing_table = True
+        table.clear(columns=False)
+        for group in visible:
+            table.add_row(
+                group.display_name,
+                format_bytes(group.pss_bytes),
+                format_percent(group.cpu_percent),
+                str(group.process_count),
+                group.source,
+                key=group.key,
+            )
+
+        def finish_rebuild() -> None:
+            try:
+                if focused_key and focused_key in self._groups_by_key:
+                    table.move_cursor(row=table.get_row_index(focused_key), scroll=False)
+            finally:
+                self._refreshing_table = False
+            self._update_detail_panel(focused_key, visible)
+
+        self.call_after_refresh(finish_rebuild)
+
     def _render_table(self, snapshot: SystemSnapshot) -> None:
         table = self.query_one("#apps", DataTable)
-        focused_key = self._focused_row_key
+        focused_key = self._capture_focused_key(table)
+        if focused_key is not None:
+            self._focused_row_key = focused_key
 
         self._groups_by_key = {group.key: group for group in snapshot.groups}
         visible = self._sorted_groups(self._filtered_groups(snapshot.groups))
+        desired_keys = [group.key for group in visible]
+        current_keys = self._ordered_row_keys(table)
 
-        self._refreshing_table = True
-        try:
-            table.clear(columns=False)
+        if desired_keys == current_keys and desired_keys:
             for group in visible:
-                table.add_row(
-                    group.display_name,
-                    format_bytes(group.pss_bytes),
-                    format_percent(group.cpu_percent),
-                    str(group.process_count),
-                    group.source,
-                    key=group.key,
-                )
+                self._update_group_row(table, group)
+            self._update_detail_panel(focused_key, visible)
+            return
 
-            if focused_key and focused_key in self._groups_by_key:
-                table.move_cursor(
-                    row=table.get_row_index(focused_key),
-                    scroll=False,
-                )
-                self._show_detail(self._groups_by_key[focused_key])
-            elif not visible:
-                self.query_one("#detail", Static).update("No matching applications.")
-            elif focused_key is None:
-                self.query_one("#detail", Static).update(
-                    "Select an application with arrow keys to inspect processes."
-                )
-            else:
-                self.query_one("#detail", Static).update(
-                    "Selected application is no longer visible."
-                )
-        finally:
-            self._refreshing_table = False
+        self._rebuild_table(table, visible, focused_key)
 
     def _show_detail(self, group: AppGroup) -> None:
         self.selected_group = group
