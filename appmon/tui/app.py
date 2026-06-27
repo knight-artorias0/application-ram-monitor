@@ -8,60 +8,11 @@ from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container
-from textual.widgets import DataTable, Footer, Header, Input, Static
+from textual.widgets import Footer, Header, Input, Static
 
 from appmon.metrics import AppGroup, MetricsCollector, SystemSnapshot
-
-COLUMN_SPECS = (
-    ("Application", "application"),
-    ("RAM", "ram"),
-    ("CPU%", "cpu"),
-    ("GPU%", "gpu"),
-    ("Net", "net"),
-    ("Procs", "procs"),
-)
-
-
-def format_bytes(num_bytes: int) -> str:
-    if num_bytes <= 0:
-        return "0 B"
-    units = ("B", "KiB", "MiB", "GiB", "TiB")
-    value = float(num_bytes)
-    unit = units[0]
-    for unit in units:
-        if value < 1024 or unit == units[-1]:
-            break
-        value /= 1024
-    if unit == "B":
-        return f"{int(value)} {unit}"
-    return f"{value:.1f} {unit}"
-
-
-def format_percent(value: float) -> str:
-    return f"{value:5.1f}%"
-
-
-def format_bitrate(bps: float) -> str:
-    if bps <= 0:
-        return "0 bps"
-    units = ("bps", "Kbps", "Mbps", "Gbps")
-    value = float(bps)
-    unit = units[0]
-    for unit in units:
-        if value < 1000 or unit == units[-1]:
-            break
-        value /= 1000
-    if unit == "bps":
-        return f"{int(value)} {unit}"
-    return f"{value:.1f} {unit}"
-
-
-def format_network(group: AppGroup, accounting: bool) -> str:
-    if accounting:
-        return f"↓{format_bitrate(group.net_down_bps)} ↑{format_bitrate(group.net_up_bps)}"
-    if group.socket_count > 0:
-        return f"{group.socket_count} sock"
-    return "-"
+from appmon.tui.formatting import format_bitrate, format_bytes, format_network, format_percent
+from appmon.tui.monitor_table import MonitorTable
 
 
 class SortKey(str, Enum):
@@ -124,7 +75,7 @@ class AppMonitorApp(App):
         display: block;
     }
 
-    DataTable {
+    MonitorTable {
         height: 1fr;
     }
 
@@ -150,11 +101,8 @@ class AppMonitorApp(App):
         self.sort_key = SortKey.RAM
         self.sort_reverse = True
         self.filter_text = ""
-        self.selected_group: AppGroup | None = None
-        self._focused_row_key: str | None = None
         self._display_order: list[str] = []
         self._groups_by_key: dict[str, AppGroup] = {}
-        self._refreshing_table = False
         self._network_accounting = False
         self._gpu_available = False
         self._last_detail_text = ""
@@ -164,17 +112,13 @@ class AppMonitorApp(App):
         yield Input(placeholder="Filter applications...", id="search")
         yield SummaryBar("Collecting metrics...", id="summary")
         with Container(id="main"):
-            yield DataTable(id="apps", zebra_stripes=False, cursor_type="row")
-            yield Static("Select an application with arrow keys to inspect processes.", id="detail")
+            yield MonitorTable(id="apps")
+            yield Static("↑/↓ select app   PgUp/PgDn scroll list   s sort   / filter   q quit", id="detail")
         yield Footer()
 
     def on_mount(self) -> None:
-        table = self.query_one("#apps", DataTable)
-        table.add_columns(*COLUMN_SPECS)
         self.set_interval(self.interval, self.refresh_metrics)
-        snapshot = self.collector.sample()
-        self.query_one("#summary", SummaryBar).update_snapshot(snapshot)
-        self._render_table(snapshot, reorder=True)
+        self.refresh_metrics(reorder=True)
 
     def _group_sort_value(self, group: AppGroup) -> float | str | int:
         if self.sort_key == SortKey.CPU:
@@ -219,138 +163,6 @@ class AppMonitorApp(App):
                     self._display_order.append(group.key)
         return [filtered_by_key[key] for key in self._display_order if key in filtered_by_key]
 
-    def _live_focused_key(self, table: DataTable) -> str | None:
-        if table.row_count == 0:
-            return self._focused_row_key
-        try:
-            coordinate = table.cursor_coordinate
-            if table.is_valid_coordinate(coordinate):
-                cell_key = table.coordinate_to_cell_key(coordinate)
-                return str(cell_key.row_key.value)
-        except Exception:
-            return self._focused_row_key
-        return self._focused_row_key
-
-    def _ordered_row_keys(self, table: DataTable) -> list[str]:
-        return [str(row.key.value) for row in table.ordered_rows]
-
-    def _gpu_cell(self, group: AppGroup) -> str:
-        if not self._gpu_available:
-            return "-"
-        if group.gpu_mem_bytes > 0 and group.gpu_percent <= 0:
-            return f"{format_bytes(group.gpu_mem_bytes)}"
-        return format_percent(group.gpu_percent)
-
-    def _row_values(self, group: AppGroup) -> dict[str, str]:
-        return {
-            "application": group.display_name,
-            "ram": format_bytes(group.pss_bytes),
-            "cpu": format_percent(group.cpu_percent),
-            "gpu": self._gpu_cell(group),
-            "net": format_network(group, self._network_accounting),
-            "procs": str(group.process_count),
-        }
-
-    def _cell_changed(self, table: DataTable, row_key: str, column_key: str, value: str) -> bool:
-        try:
-            current = table.get_cell(row_key, column_key)
-        except Exception:
-            return True
-        return str(current) != value
-
-    def _update_group_row(self, table: DataTable, group: AppGroup) -> bool:
-        changed = False
-        for column_key, value in self._row_values(group).items():
-            if self._cell_changed(table, group.key, column_key, value):
-                table.update_cell(group.key, column_key, value)
-                changed = True
-        return changed
-
-    def _restore_viewport(self, table: DataTable, scroll_y: int, scroll_x: int, focused_key: str | None) -> None:
-        table.scroll_x = scroll_x
-        table.scroll_y = scroll_y
-        if focused_key and focused_key in self._groups_by_key:
-            try:
-                table.move_cursor(row=table.get_row_index(focused_key), scroll=False)
-            except Exception:
-                pass
-        table.scroll_x = scroll_x
-        table.scroll_y = scroll_y
-
-    def _set_detail_message(self, text: str) -> None:
-        if text == self._last_detail_text:
-            return
-        self._last_detail_text = text
-        self.query_one("#detail", Static).update(text)
-
-    def _rebuild_table(self, table: DataTable, visible: list[AppGroup], focused_key: str | None) -> None:
-        scroll_y = table.scroll_y
-        scroll_x = table.scroll_x
-        self._refreshing_table = True
-        with self.batch_update():
-            table.clear(columns=False)
-            for group in visible:
-                values = self._row_values(group)
-                table.add_row(
-                    values["application"],
-                    values["ram"],
-                    values["cpu"],
-                    values["gpu"],
-                    values["net"],
-                    values["procs"],
-                    key=group.key,
-                )
-
-        def finish_rebuild() -> None:
-            try:
-                self._restore_viewport(table, scroll_y, scroll_x, focused_key)
-            finally:
-                self._refreshing_table = False
-            if focused_key and focused_key in self._groups_by_key:
-                self._show_detail(self._groups_by_key[focused_key])
-            elif not visible:
-                self._set_detail_message("No matching applications.")
-            elif focused_key is None:
-                self._set_detail_message("Select an application with arrow keys to inspect processes.")
-            else:
-                self._set_detail_message("Selected application is no longer visible.")
-
-        self.call_after_refresh(finish_rebuild)
-
-    def _render_table(self, snapshot: SystemSnapshot, *, reorder: bool = False) -> None:
-        table = self.query_one("#apps", DataTable)
-        focused_key = self._live_focused_key(table)
-        if focused_key is not None:
-            self._focused_row_key = focused_key
-
-        scroll_y = table.scroll_y
-        scroll_x = table.scroll_x
-
-        self._groups_by_key = {group.key: group for group in snapshot.groups}
-        self._network_accounting = snapshot.network_accounting
-        self._gpu_available = snapshot.gpu_available
-
-        filtered = self._filtered_groups(snapshot.groups)
-        visible = self._sync_display_order(filtered, reorder=reorder)
-        desired_keys = [group.key for group in visible]
-        current_keys = self._ordered_row_keys(table)
-
-        if desired_keys == current_keys and desired_keys:
-            changed = False
-            with self.batch_update():
-                for group in visible:
-                    if self._update_group_row(table, group):
-                        changed = True
-            if changed:
-                self.call_after_refresh(
-                    lambda: self._restore_viewport(table, scroll_y, scroll_x, focused_key)
-                )
-            if focused_key and focused_key in self._groups_by_key:
-                self._show_detail(self._groups_by_key[focused_key])
-            return
-
-        self._rebuild_table(table, visible, focused_key)
-
     def _detail_text(self, group: AppGroup) -> str:
         lines = [
             (
@@ -380,14 +192,36 @@ class AppMonitorApp(App):
             lines.append(f"... and {len(group.processes) - 12} more")
         return "\n".join(lines)
 
-    def _show_detail(self, group: AppGroup) -> None:
-        self.selected_group = group
-        self._set_detail_message(self._detail_text(group))
+    def _show_detail(self, group: AppGroup | None) -> None:
+        detail = self.query_one("#detail", Static)
+        if group is None:
+            text = "↑/↓ select app   PgUp/PgDn scroll list   s sort   / filter   q quit"
+        else:
+            text = self._detail_text(group)
+        if text == self._last_detail_text:
+            return
+        self._last_detail_text = text
+        detail.update(text)
 
-    def refresh_metrics(self) -> None:
+    def refresh_metrics(self, *, reorder: bool = False) -> None:
         snapshot = self.collector.sample()
         self.query_one("#summary", SummaryBar).update_snapshot(snapshot)
-        self._render_table(snapshot, reorder=False)
+
+        self._groups_by_key = {group.key: group for group in snapshot.groups}
+        self._network_accounting = snapshot.network_accounting
+        self._gpu_available = snapshot.gpu_available
+
+        visible = self._sync_display_order(self._filtered_groups(snapshot.groups), reorder=reorder)
+        table = self.query_one("#apps", MonitorTable)
+        with self.batch_update():
+            table.set_rows(
+                visible,
+                gpu_available=snapshot.gpu_available,
+                network_accounting=snapshot.network_accounting,
+            )
+            selected = table.selected_key
+            if selected and selected in self._groups_by_key:
+                self._show_detail(self._groups_by_key[selected])
 
     def action_search(self) -> None:
         search = self.query_one("#search", Input)
@@ -399,9 +233,8 @@ class AppMonitorApp(App):
         search.value = ""
         search.remove_class("visible")
         self.filter_text = ""
-        snapshot = self.collector.sample()
-        self._render_table(snapshot, reorder=True)
-        self.query_one("#apps", DataTable).focus()
+        self.refresh_metrics(reorder=True)
+        self.query_one("#apps", MonitorTable).focus()
 
     def action_cycle_sort(self) -> None:
         order = [SortKey.RAM, SortKey.CPU, SortKey.GPU, SortKey.NET, SortKey.NAME, SortKey.PROCS]
@@ -409,37 +242,19 @@ class AppMonitorApp(App):
         self.sort_key = order[(idx + 1) % len(order)]
         self.sort_reverse = self.sort_key != SortKey.NAME
         self.notify(f"Sorted by {self.sort_key.value}")
-        snapshot = self.collector.sample()
-        self._render_table(snapshot, reorder=True)
+        self.refresh_metrics(reorder=True)
 
     @on(Input.Submitted, "#search")
     def on_search_submitted(self, event: Input.Submitted) -> None:
         self.filter_text = event.value.strip()
         event.input.remove_class("visible")
-        self.query_one("#apps", DataTable).focus()
-        snapshot = self.collector.sample()
-        self._render_table(snapshot, reorder=True)
+        self.query_one("#apps", MonitorTable).focus()
+        self.refresh_metrics(reorder=True)
 
-    @on(DataTable.RowHighlighted)
-    def on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        if self._refreshing_table or event.row_key is None:
-            return
-        row_key = str(event.row_key.value)
-        if row_key == self._focused_row_key:
-            return
-        self._focused_row_key = row_key
-        group = self._groups_by_key.get(row_key)
-        if group is not None:
-            self._show_detail(group)
-
-    @on(DataTable.RowSelected)
-    def on_row_selected(self, event: DataTable.RowSelected) -> None:
-        if event.row_key is None:
-            return
-        self._focused_row_key = str(event.row_key.value)
-        group = self._groups_by_key.get(self._focused_row_key)
-        if group is not None:
-            self._show_detail(group)
+    @on(MonitorTable.SelectionChanged)
+    def on_selection_changed(self, event: MonitorTable.SelectionChanged) -> None:
+        if event.group_key and event.group_key in self._groups_by_key:
+            self._show_detail(self._groups_by_key[event.group_key])
 
 
 def run_tui(interval: float = 1.0) -> None:

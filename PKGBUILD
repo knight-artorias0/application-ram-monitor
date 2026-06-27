@@ -2,7 +2,7 @@
 # Build from a local git clone: makepkg -si
 
 pkgname=appmon
-pkgver=0.2.3
+pkgver=0.3.0
 pkgrel=1
 pkgdesc="Terminal monitor that aggregates RAM and CPU usage per application"
 arch=('any')
