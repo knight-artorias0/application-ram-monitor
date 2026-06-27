@@ -2,25 +2,27 @@
 # AUR package — publish contents of this directory to https://aur.archlinux.org/appmon
 
 pkgname=appmon
-pkgver=0.3.1
+pkgver=0.3.2
 pkgrel=1
 pkgdesc="Terminal monitor that aggregates RAM and CPU usage per application"
 arch=('any')
 url="https://github.com/knight-artorias0/application-ram-monitor"
 license=('MIT')
-depends=('python' 'python-textual' 'python-nvidia-ml-py')
-optdepends=('nvidia-utils: optional nvidia-smi fallback for GPU stats')
-makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel' 'git')
+depends=('python' 'python-textual')
+optdepends=('nvidia-utils: NVIDIA driver tools for GPU stats fallback')
+makedepends=('python-build' 'python-installer' 'python-pip' 'python-setuptools' 'python-wheel' 'git')
 source=("appmon::git+https://github.com/knight-artorias0/application-ram-monitor.git#tag=v$pkgver")
 sha256sums=('SKIP')
 
 build() {
   cd appmon
   python -m build --wheel --no-isolation
+  python -m pip wheel nvidia-ml-py -w dist --no-deps
 }
 
 package() {
   cd appmon
-  python -m installer --destdir="$pkgdir" dist/*.whl
+  python -m installer --destdir="$pkgdir" dist/appmon-*.whl
+  python -m installer --destdir="$pkgdir" dist/nvidia_ml_py-*.whl
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
