@@ -36,6 +36,10 @@ def _cgroup_has_ip_accounting(cgroup_path: str) -> bool:
     return (base / "ip-ingress.bytes").is_file() and (base / "ip-egress.bytes").is_file()
 
 
+def cgroup_has_ip_accounting(cgroup_path: str) -> bool:
+    return _cgroup_has_ip_accounting(cgroup_path)
+
+
 def read_cgroup_network_bytes(cgroup_path: str) -> tuple[int, int]:
     if not cgroup_path or not _cgroup_has_ip_accounting(cgroup_path):
         return 0, 0
