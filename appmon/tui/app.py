@@ -101,7 +101,9 @@ class AppMonitorApp(App):
         self.sort_reverse = True
         self.filter_text = ""
         self.selected_group: AppGroup | None = None
+        self._focused_row_key: str | None = None
         self._groups_by_key: dict[str, AppGroup] = {}
+        self._refreshing_table = False
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -142,24 +144,42 @@ class AppMonitorApp(App):
 
     def _render_table(self, snapshot: SystemSnapshot) -> None:
         table = self.query_one("#apps", DataTable)
-        table.clear()
+        focused_key = self._focused_row_key
+
         self._groups_by_key = {group.key: group for group in snapshot.groups}
         visible = self._sorted_groups(self._filtered_groups(snapshot.groups))
-        for group in visible:
-            table.add_row(
-                group.display_name,
-                format_bytes(group.pss_bytes),
-                format_percent(group.cpu_percent),
-                str(group.process_count),
-                group.source,
-                key=group.key,
-            )
-        if self.selected_group and self.selected_group.key in self._groups_by_key:
-            self._show_detail(self._groups_by_key[self.selected_group.key])
-        elif visible:
-            self._show_detail(visible[0])
-        else:
-            self.query_one("#detail", Static).update("No matching applications.")
+
+        self._refreshing_table = True
+        try:
+            table.clear(columns=False)
+            for group in visible:
+                table.add_row(
+                    group.display_name,
+                    format_bytes(group.pss_bytes),
+                    format_percent(group.cpu_percent),
+                    str(group.process_count),
+                    group.source,
+                    key=group.key,
+                )
+
+            if focused_key and focused_key in self._groups_by_key:
+                table.move_cursor(
+                    row=table.get_row_index(focused_key),
+                    scroll=False,
+                )
+                self._show_detail(self._groups_by_key[focused_key])
+            elif not visible:
+                self.query_one("#detail", Static).update("No matching applications.")
+            elif focused_key is None:
+                self.query_one("#detail", Static).update(
+                    "Select an application with arrow keys to inspect processes."
+                )
+            else:
+                self.query_one("#detail", Static).update(
+                    "Selected application is no longer visible."
+                )
+        finally:
+            self._refreshing_table = False
 
     def _show_detail(self, group: AppGroup) -> None:
         self.selected_group = group
@@ -214,9 +234,10 @@ class AppMonitorApp(App):
 
     @on(DataTable.RowHighlighted)
     def on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
-        if event.row_key is None:
+        if self._refreshing_table or event.row_key is None:
             return
-        group = self._groups_by_key.get(str(event.row_key.value))
+        self._focused_row_key = str(event.row_key.value)
+        group = self._groups_by_key.get(self._focused_row_key)
         if group is not None:
             self._show_detail(group)
 
@@ -224,7 +245,8 @@ class AppMonitorApp(App):
     def on_row_selected(self, event: DataTable.RowSelected) -> None:
         if event.row_key is None:
             return
-        group = self._groups_by_key.get(str(event.row_key.value))
+        self._focused_row_key = str(event.row_key.value)
+        group = self._groups_by_key.get(self._focused_row_key)
         if group is not None:
             self._show_detail(group)
 
