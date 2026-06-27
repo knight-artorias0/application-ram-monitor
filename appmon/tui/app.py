@@ -94,7 +94,7 @@ class SummaryBar(Static):
         if snapshot.pss_fallback:
             parts.append("(RSS fallback)")
         text = "   ".join(parts)
-        if self.renderable != text:
+        if self.content != text:
             self.update(text)
 
 
