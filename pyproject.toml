@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "appmon"
-version = "0.3.0"
+version = "0.3.1"
 description = "Terminal monitor that aggregates RAM and CPU usage per application on Linux"
 readme = "README.md"
 license = { text = "MIT" }
@@ -24,6 +24,7 @@ classifiers = [
 ]
 dependencies = [
     "textual>=1.0.0",
+    "nvidia-ml-py>=12.0.0",
 ]
 
 [project.optional-dependencies]

@@ -2,13 +2,14 @@
 # AUR package — publish contents of this directory to https://aur.archlinux.org/appmon
 
 pkgname=appmon
-pkgver=0.2.0
+pkgver=0.3.1
 pkgrel=1
 pkgdesc="Terminal monitor that aggregates RAM and CPU usage per application"
 arch=('any')
 url="https://github.com/knight-artorias0/application-ram-monitor"
 license=('MIT')
-depends=('python' 'python-textual')
+depends=('python' 'python-textual' 'python-nvidia-ml-py')
+optdepends=('nvidia-utils: optional nvidia-smi fallback for GPU stats')
 makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel' 'git')
 source=("appmon::git+https://github.com/knight-artorias0/application-ram-monitor.git#tag=v$pkgver")
 sha256sums=('SKIP')
