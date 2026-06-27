@@ -1,6 +1,6 @@
 # Application RAM Monitor (appmon)
 
-Terminal monitor for **Arch Linux** (and other systemd + cgroup v2 systems) that aggregates RAM and CPU usage **per application** instead of per process.
+Terminal monitor for **Arch Linux** that aggregates RAM and CPU usage **per application** instead of per process.
 
 Like `htop` or `btop`, but Firefox's main process, GPU process, and content processes show up as a single **Firefox** row.
 
@@ -14,56 +14,42 @@ Like `htop` or `btop`, but Firefox's main process, GPU process, and content proc
 
 ## Requirements
 
-- Linux with `/proc` (tested on Arch Linux)
+- Arch Linux (or another systemd + cgroup v2 distro)
 - Python 3.11+
-- systemd user session with cgroup v2 (default on modern Arch)
+- `base-devel` for building from source
 
-## Install
+## Install on Arch
 
-| Method | Command | Best for |
-|--------|---------|----------|
-| **AUR** | `yay -S appmon` | Arch users — system-wide install |
-| **pipx** | `pipx install git+https://github.com/YOUR_USER/application-ram-monitor.git` | Quick try without AUR |
-| **Clone** | `git clone ... && ./scripts/install.sh` | Development / hacking |
+### From a git clone (recommended)
 
-### AUR (recommended)
+```bash
+sudo pacman -S --needed base-devel git \
+  python python-build python-installer python-setuptools python-wheel python-textual
 
-Once published to the AUR:
+git clone https://github.com/knight-artorias0/application-ram-monitor.git
+cd application-ram-monitor
+makepkg -si
+```
+
+`makepkg -si` builds a pacman package and installs it system-wide. Uninstall later with:
+
+```bash
+sudo pacman -R appmon
+```
+
+### From the AUR (once published)
 
 ```bash
 yay -S appmon
-appmon
 ```
 
-### Clone and install
-
-```bash
-git clone https://github.com/YOUR_USER/application-ram-monitor.git
-cd application-ram-monitor
-./scripts/install.sh
-appmon
-```
-
-Manual install:
-
-```bash
-pip install -e .          # editable dev install
-# or
-pipx install .            # isolated user install
-```
-
-Arch dependencies for a manual install:
-
-```bash
-sudo pacman -S python python-pip python-textual
-```
+The AUR package files are in [`packaging/aur/`](packaging/aur/) for maintainers.
 
 ## Usage
 
 ```bash
 appmon                  # launch TUI (1s refresh)
 appmon --interval 2     # slower refresh
-python -m appmon        # same as appmon
 ```
 
 ### Keybindings
@@ -86,25 +72,31 @@ Memory uses **PSS** from `/proc/<pid>/smaps_rollup` when readable; otherwise RSS
 
 ## Publishing to the AUR
 
-The AUR package files live in [`packaging/aur/`](packaging/aur/).
-
 1. Tag a release: `git tag v0.1.0 && git push --tags`
-2. Update `pkgver` in `packaging/aur/PKGBUILD`
-3. Generate metadata:
+2. Update `pkgver` / `pkgrel` in [`packaging/aur/PKGBUILD`](packaging/aur/PKGBUILD) if needed
+3. Regenerate metadata:
 
    ```bash
    cd packaging/aur
    makepkg --printsrcinfo > .SRCINFO
    ```
 
-4. Push `PKGBUILD` and `.SRCINFO` to your AUR repo (`aur/appmon`)
+4. Push `PKGBUILD` and `.SRCINFO` to the AUR git remote (`aur/appmon`)
 
 ## Development
 
 ```bash
+git clone https://github.com/knight-artorias0/application-ram-monitor.git
+cd application-ram-monitor
 pip install -e ".[dev]"
 pytest
 python -m appmon
+```
+
+For a local pacman package during development, use the root [`PKGBUILD`](PKGBUILD):
+
+```bash
+makepkg -si
 ```
 
 ## License

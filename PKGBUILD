@@ -1,5 +1,5 @@
 # Maintainer: application-ram-monitor contributors
-# AUR package — publish contents of this directory to https://aur.archlinux.org/appmon
+# Build from a local git clone: makepkg -si
 
 pkgname=appmon
 pkgver=0.1.0
@@ -9,17 +9,17 @@ arch=('any')
 url="https://github.com/knight-artorias0/application-ram-monitor"
 license=('MIT')
 depends=('python' 'python-textual')
-makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel' 'git')
-source=("appmon::git+https://github.com/knight-artorias0/application-ram-monitor.git#tag=v$pkgver")
-sha256sums=('SKIP')
+makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel')
+source=()
+options=(!debug)
 
 build() {
-  cd appmon
+  cd "$startdir"
   python -m build --wheel --no-isolation
 }
 
 package() {
-  cd appmon
+  cd "$startdir"
   python -m installer --destdir="$pkgdir" dist/*.whl
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
