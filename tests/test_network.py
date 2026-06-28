@@ -1,6 +1,6 @@
 """Tests for network helpers."""
 
-from appmon.network import read_socket_count, read_system_network_totals
+from appmon.network import read_socket_bytes_by_pid, read_system_network_totals
 
 
 def test_read_system_network_totals_non_negative():
@@ -9,8 +9,6 @@ def test_read_system_network_totals_non_negative():
     assert tx >= 0
 
 
-def test_read_socket_count_for_self():
-    import os
-
-    count = read_socket_count(os.getpid())
-    assert count >= 0
+def test_read_socket_bytes_by_pid_returns_mapping():
+    stats = read_socket_bytes_by_pid()
+    assert isinstance(stats, dict)

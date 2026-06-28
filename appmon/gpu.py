@@ -17,6 +17,16 @@ class GpuProcessStats:
     gpu_mem_bytes: int
 
 
+def _parse_float(value: str) -> float:
+    value = value.strip()
+    if value in {"", "-", "[N/A]", "N/A"}:
+        return 0.0
+    try:
+        return float(value)
+    except ValueError:
+        return 0.0
+
+
 def _try_init_nvml() -> bool:
     global _NVML_INITIALIZED, _NVML_AVAILABLE
     if _NVML_INITIALIZED:
@@ -158,18 +168,17 @@ def _sample_via_nvidia_smi() -> dict[int, GpuProcessStats]:
         if not line or line.startswith("#"):
             continue
         parts = line.split()
-        if len(parts) < 5:
+        if len(parts) < 4:
             continue
         try:
             pid = int(parts[1])
-            sm = float(parts[3])
-            mem_percent = float(parts[4])
         except ValueError:
             continue
-        _merge_stat(stats, pid, gpu_percent=sm)
-        if mem_percent > 0 and stats[pid].gpu_mem_bytes == 0:
-            # pmon only exposes %, keep util at least.
-            _merge_stat(stats, pid, gpu_percent=mem_percent)
+        sm = _parse_float(parts[3])
+        mem_util = _parse_float(parts[4]) if len(parts) > 4 else 0.0
+        util = sm if sm > 0 else mem_util
+        if util > 0:
+            _merge_stat(stats, pid, gpu_percent=util)
 
     for query in (
         ("--query-apps=pid,used_gpu_memory",),
@@ -202,13 +211,9 @@ def sample_total_gpu_util() -> float:
     )
     total = 0.0
     for line in output.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            total += float(line)
-        except ValueError:
-            continue
+        value = _parse_float(line)
+        if value > 0:
+            total += value
     if total > 0:
         return total
 
@@ -225,6 +230,31 @@ def sample_total_gpu_util() -> float:
     return total
 
 
+def estimate_gpu_percentages(stats: dict[int, GpuProcessStats]) -> dict[int, GpuProcessStats]:
+    """Fill missing per-process GPU % using total GPU util and VRAM share."""
+    if not stats:
+        return stats
+
+    total_util = sample_total_gpu_util()
+    if total_util <= 0:
+        return stats
+
+    total_vram = sum(item.gpu_mem_bytes for item in stats.values())
+    if total_vram <= 0:
+        return stats
+
+    estimated: dict[int, GpuProcessStats] = {}
+    for pid, item in stats.items():
+        gpu_percent = item.gpu_percent
+        if gpu_percent <= 0 and item.gpu_mem_bytes > 0:
+            gpu_percent = total_util * (item.gpu_mem_bytes / total_vram)
+        estimated[pid] = GpuProcessStats(
+            gpu_percent=gpu_percent,
+            gpu_mem_bytes=item.gpu_mem_bytes,
+        )
+    return estimated
+
+
 def sample_gpu_by_pid() -> dict[int, GpuProcessStats]:
     """Return per-PID GPU utilization and VRAM from all available backends."""
     stats: dict[int, GpuProcessStats] = {}
@@ -232,10 +262,4 @@ def sample_gpu_by_pid() -> dict[int, GpuProcessStats]:
         _merge_stats(stats, _sample_via_nvml())
     if _nvidia_smi_path() is not None:
         _merge_stats(stats, _sample_via_nvidia_smi())
-    return stats
-
-
-def gpu_data_available(stats: dict[int, GpuProcessStats]) -> bool:
-    if stats:
-        return True
-    return sample_total_gpu_util() > 0
+    return estimate_gpu_percentages(stats)
