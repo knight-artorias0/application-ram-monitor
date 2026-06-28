@@ -11,8 +11,8 @@ Like `htop` or `btop`, but Firefox's main process, GPU process, and content proc
 - Supports **Flatpak** and **Snap** scope naming
 - Falls back to executable name for CLI tools and terminals
 - Interactive TUI with search, sort, and per-process drill-down
-- **GPU**: per-process stats via bundled `nvidia-ml-py` (still needs NVIDIA drivers installed)
-- **Network**: per-app rates when systemd cgroup IP accounting is available; otherwise shows active sockets and system-wide throughput
+- **GPU**: NVIDIA driver required; install `nvidia-utils` for best results (`nvidia-smi` + bundled `nvidia-ml-py`)
+- **Network**: shown in **Mbps/Gbps**; `~` means estimated from open sockets when per-app cgroup data isn't available
 
 ## Requirements
 
