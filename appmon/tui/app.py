@@ -11,14 +11,13 @@ from textual.containers import Container
 from textual.widgets import Footer, Header, Input, Static
 
 from appmon.metrics import AppGroup, MetricsCollector, SystemSnapshot
-from appmon.tui.formatting import format_bytes, format_gpu, format_network, format_network_speed, format_percent
+from appmon.tui.formatting import format_bytes, format_network, format_network_speed, format_percent
 from appmon.tui.monitor_table import MonitorTable
 
 
 class SortKey(str, Enum):
     RAM = "ram"
     CPU = "cpu"
-    GPU = "gpu"
     NET = "net"
     NAME = "name"
     PROCS = "procs"
@@ -29,14 +28,15 @@ class SummaryBar(Static):
         total = format_bytes(snapshot.total_mem_bytes)
         used = format_bytes(snapshot.used_mem_bytes)
         cpu = format_percent(snapshot.total_cpu_percent)
-        parts = [f"Memory: {used} / {total}", f"CPU: {cpu}"]
-        if snapshot.gpu_available:
-            parts.append(f"GPU: {format_percent(snapshot.total_gpu_percent)}")
         net_suffix = "~" if snapshot.network_estimated else ""
-        parts.append(
-            f"Net: ↓{format_network_speed(snapshot.total_net_down_bps)}{net_suffix} "
-            f"↑{format_network_speed(snapshot.total_net_up_bps)}{net_suffix}"
-        )
+        parts = [
+            f"Memory: {used} / {total}",
+            f"CPU: {cpu}",
+            (
+                f"Net: ↓{format_network_speed(snapshot.total_net_down_bps)}{net_suffix} "
+                f"↑{format_network_speed(snapshot.total_net_up_bps)}{net_suffix}"
+            ),
+        ]
         if snapshot.pss_fallback:
             parts.append("(RSS fallback)")
         text = "   ".join(parts)
@@ -99,7 +99,6 @@ class AppMonitorApp(App):
         self._display_order: list[str] = []
         self._groups_by_key: dict[str, AppGroup] = {}
         self._network_estimated = False
-        self._gpu_available = False
         self._last_detail_text = ""
 
     def compose(self) -> ComposeResult:
@@ -118,8 +117,6 @@ class AppMonitorApp(App):
     def _group_sort_value(self, group: AppGroup) -> float | str | int:
         if self.sort_key == SortKey.CPU:
             return group.cpu_percent
-        if self.sort_key == SortKey.GPU:
-            return group.gpu_percent
         if self.sort_key == SortKey.NET:
             return group.net_down_bps + group.net_up_bps
         if self.sort_key == SortKey.NAME:
@@ -164,7 +161,7 @@ class AppMonitorApp(App):
                 f"{group.display_name} ({group.key}) — {group.process_count} process(es), "
                 f"source: {group.source}"
             ),
-            "PID      RAM        CPU%     GPU%     Net                  COMM",
+            "PID      RAM        CPU%     Net                  COMM",
         ]
         for proc in sorted(group.processes, key=lambda p: p.pss_bytes, reverse=True)[:12]:
             net = format_network(
@@ -178,19 +175,9 @@ class AppMonitorApp(App):
                 ),
                 estimated=self._network_estimated,
             )
-            gpu = format_gpu(
-                AppGroup(
-                    key=group.key,
-                    display_name=group.display_name,
-                    source=group.source,
-                    gpu_percent=proc.gpu_percent,
-                    gpu_mem_bytes=proc.gpu_mem_bytes,
-                ),
-                self._gpu_available,
-            )
             lines.append(
                 f"{proc.pid:<8} {format_bytes(proc.pss_bytes):>10} "
-                f"{format_percent(proc.cpu_percent):>8} {gpu:>8} {net:<20} {proc.comm}"
+                f"{format_percent(proc.cpu_percent):>8} {net:<20} {proc.comm}"
             )
         if len(group.processes) > 12:
             lines.append(f"... and {len(group.processes) - 12} more")
@@ -213,14 +200,12 @@ class AppMonitorApp(App):
 
         self._groups_by_key = {group.key: group for group in snapshot.groups}
         self._network_estimated = snapshot.network_estimated
-        self._gpu_available = snapshot.gpu_available
 
         visible = self._sync_display_order(self._filtered_groups(snapshot.groups), reorder=reorder)
         table = self.query_one("#apps", MonitorTable)
         with self.batch_update():
             table.set_rows(
                 visible,
-                gpu_available=snapshot.gpu_available,
                 network_estimated=snapshot.network_estimated,
             )
             selected = table.selected_key
@@ -241,7 +226,7 @@ class AppMonitorApp(App):
         self.query_one("#apps", MonitorTable).focus()
 
     def action_cycle_sort(self) -> None:
-        order = [SortKey.RAM, SortKey.CPU, SortKey.GPU, SortKey.NET, SortKey.NAME, SortKey.PROCS]
+        order = [SortKey.RAM, SortKey.CPU, SortKey.NET, SortKey.NAME, SortKey.PROCS]
         idx = order.index(self.sort_key)
         self.sort_key = order[(idx + 1) % len(order)]
         self.sort_reverse = self.sort_key != SortKey.NAME

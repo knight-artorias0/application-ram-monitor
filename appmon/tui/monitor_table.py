@@ -10,7 +10,7 @@ from textual.message import Message
 from textual.widgets import Static
 
 from appmon.metrics import AppGroup
-from appmon.tui.formatting import format_bytes, format_gpu, format_network, format_network_speed, format_percent
+from appmon.tui.formatting import format_bytes, format_network, format_percent
 
 
 class MonitorTable(Static, can_focus=True):
@@ -43,7 +43,6 @@ class MonitorTable(Static, can_focus=True):
         self._rows: list[AppGroup] = []
         self._selected_key: str | None = None
         self._scroll_top = 0
-        self._gpu_available = False
         self._network_estimated = False
         self._visible_rows = 18
         self._last_signature: tuple[tuple, ...] = ()
@@ -56,11 +55,9 @@ class MonitorTable(Static, can_focus=True):
         self,
         rows: list[AppGroup],
         *,
-        gpu_available: bool,
         network_estimated: bool,
     ) -> None:
         self._rows = rows
-        self._gpu_available = gpu_available
         self._network_estimated = network_estimated
 
         keys = {row.key for row in rows}
@@ -80,8 +77,6 @@ class MonitorTable(Static, can_focus=True):
                 row.key,
                 row.pss_bytes,
                 round(row.cpu_percent, 1),
-                round(row.gpu_percent, 1),
-                row.gpu_mem_bytes,
                 round(row.net_down_bps, -2),
                 round(row.net_up_bps, -2),
                 row.socket_count,
@@ -123,7 +118,6 @@ class MonitorTable(Static, can_focus=True):
         table.add_column("Application", ratio=3, no_wrap=True)
         table.add_column("RAM", justify="right", no_wrap=True)
         table.add_column("CPU%", justify="right", no_wrap=True)
-        table.add_column("GPU%", justify="right", no_wrap=True)
         table.add_column("Net", ratio=2, no_wrap=True)
         table.add_column("Procs", justify="right", no_wrap=True)
 
@@ -135,12 +129,10 @@ class MonitorTable(Static, can_focus=True):
             app_name = Text(f"{marker}{row.display_name}")
             if selected:
                 app_name.stylize("reverse bold")
-            gpu = format_gpu(row, self._gpu_available)
             cells = [
                 app_name,
                 format_bytes(row.pss_bytes),
                 format_percent(row.cpu_percent),
-                gpu,
                 format_network(row, estimated=self._network_estimated),
                 str(row.process_count),
             ]

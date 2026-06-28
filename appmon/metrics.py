@@ -6,7 +6,6 @@ import os
 import time
 from dataclasses import dataclass, field
 
-from appmon.gpu import GpuProcessStats, nvidia_available, sample_gpu_by_pid, sample_total_gpu_util
 from appmon.grouping import GroupKey, build_parent_exe_index, resolve_group
 from appmon.network import (
     SocketByteTotals,
@@ -25,8 +24,6 @@ class ProcessSample:
     comm: str
     pss_bytes: int
     cpu_percent: float
-    gpu_percent: float = 0.0
-    gpu_mem_bytes: int = 0
     net_down_bps: float = 0.0
     net_up_bps: float = 0.0
     socket_count: int = 0
@@ -39,8 +36,6 @@ class AppGroup:
     source: str
     pss_bytes: int = 0
     cpu_percent: float = 0.0
-    gpu_percent: float = 0.0
-    gpu_mem_bytes: int = 0
     net_down_bps: float = 0.0
     net_up_bps: float = 0.0
     socket_count: int = 0
@@ -55,10 +50,8 @@ class SystemSnapshot:
     available_mem_bytes: int
     used_mem_bytes: int
     total_cpu_percent: float
-    total_gpu_percent: float
     total_net_down_bps: float
     total_net_up_bps: float
-    gpu_available: bool
     network_accounting: bool
     network_estimated: bool
     pss_fallback: bool = False
@@ -136,10 +129,6 @@ class MetricsCollector:
         self._network_accounting = False
         self._network_estimated = False
 
-        gpu_by_pid: dict[int, GpuProcessStats] = {}
-        if nvidia_available():
-            gpu_by_pid = sample_gpu_by_pid()
-
         socket_bytes = read_socket_bytes_by_pid()
         pid_net_rates: dict[int, tuple[float, float]] = {}
         socket_tracking = False
@@ -164,9 +153,6 @@ class MetricsCollector:
             cpu_pct = self._cpu_percent(process.pid, process.utime, process.stime, elapsed)
             self._prev_ticks[process.pid] = (process.utime, process.stime)
 
-            gpu_stats = gpu_by_pid.get(process.pid)
-            gpu_pct = gpu_stats.gpu_percent if gpu_stats else 0.0
-            gpu_mem = gpu_stats.gpu_mem_bytes if gpu_stats else 0
             sockets = read_socket_count(process.pid)
             net_down, net_up = pid_net_rates.get(process.pid, (0.0, 0.0))
 
@@ -183,8 +169,6 @@ class MetricsCollector:
             app_group = grouped[group_key.key]
             app_group.pss_bytes += process.pss_bytes
             app_group.cpu_percent += cpu_pct
-            app_group.gpu_percent += gpu_pct
-            app_group.gpu_mem_bytes += gpu_mem
             app_group.socket_count += sockets
             app_group.net_down_bps += net_down
             app_group.net_up_bps += net_up
@@ -195,8 +179,6 @@ class MetricsCollector:
                     comm=process.comm,
                     pss_bytes=process.pss_bytes,
                     cpu_percent=cpu_pct,
-                    gpu_percent=gpu_pct,
-                    gpu_mem_bytes=gpu_mem,
                     net_down_bps=net_down,
                     net_up_bps=net_up,
                     socket_count=sockets,
@@ -217,8 +199,6 @@ class MetricsCollector:
         used_mem = max(total_mem - available_mem, 0)
         groups = list(grouped.values())
         total_cpu = sum(group.cpu_percent for group in groups)
-        per_pid_gpu = sum(group.gpu_percent for group in groups)
-        total_gpu = per_pid_gpu if per_pid_gpu > 0 else sample_total_gpu_util()
         total_down = sum(group.net_down_bps for group in groups)
         total_up = sum(group.net_up_bps for group in groups)
 
@@ -257,10 +237,8 @@ class MetricsCollector:
             available_mem_bytes=available_mem,
             used_mem_bytes=used_mem,
             total_cpu_percent=min(total_cpu, 100.0 * self._cpu_count),
-            total_gpu_percent=min(total_gpu, 100.0),
             total_net_down_bps=total_down,
             total_net_up_bps=total_up,
-            gpu_available=nvidia_available(),
             network_accounting=self._network_accounting,
             network_estimated=self._network_estimated,
             pss_fallback=self._pss_fallback,

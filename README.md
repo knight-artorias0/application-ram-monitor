@@ -6,12 +6,11 @@ Like `htop` or `btop`, but Firefox's main process, GPU process, and content proc
 
 ## Features
 
-- Aggregates **PSS memory**, **CPU %**, **GPU %** (NVIDIA), and **network** per application
+- Aggregates **PSS memory**, **CPU %**, and **network** per application
 - Groups desktop apps via **systemd cgroup app IDs** (`app.slice`)
 - Supports **Flatpak** and **Snap** scope naming
 - Falls back to executable name for CLI tools and terminals
 - Interactive TUI with search, sort, and per-process drill-down
-- **GPU**: NVIDIA driver required; install `nvidia-utils` for best results (`nvidia-smi` + bundled `nvidia-ml-py`)
 - **Network**: shown in **Mbps/Gbps**; `~` means estimated from open sockets when per-app cgroup data isn't available
 
 ## Requirements
@@ -25,7 +24,7 @@ Like `htop` or `btop`, but Firefox's main process, GPU process, and content proc
 ### From a git clone (recommended)
 
 ```bash
-sudo pacman -S --needed base-devel git \
+sudo pacman -S --needed base-devel git iproute2 \
   python python-build python-installer python-pip python-setuptools python-wheel python-textual
 
 git clone https://github.com/knight-artorias0/application-ram-monitor.git
@@ -73,7 +72,7 @@ appmon --interval 2     # slower refresh
 |-----|--------|
 | `q` | Quit |
 | `/` | Filter applications by name |
-| `s` | Cycle sort (RAM → CPU → GPU → network → name → process count) |
+| `s` | Cycle sort (RAM → CPU → network → name → process count) |
 | `Enter` / arrow keys | Highlight app and show per-PID breakdown |
 | `Esc` | Clear search filter |
 

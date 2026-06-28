@@ -38,17 +38,6 @@ def format_network_speed(bps: float) -> str:
     return f"{mbps:.2f} Mbps"
 
 
-def format_gpu(group: AppGroup, gpu_available: bool) -> str:
-    if not gpu_available:
-        return "-"
-    parts: list[str] = []
-    if group.gpu_percent > 0:
-        parts.append(f"{group.gpu_percent:.1f}%")
-    if group.gpu_mem_bytes > 0:
-        parts.append(format_bytes(group.gpu_mem_bytes))
-    return " ".join(parts) if parts else "0%"
-
-
 def format_network(group: AppGroup, *, estimated: bool = False) -> str:
     suffix = "~" if estimated else ""
     if group.net_down_bps > 0 or group.net_up_bps > 0:
