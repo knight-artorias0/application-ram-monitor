@@ -2,14 +2,14 @@
 # Build from a local git clone: makepkg -si
 
 pkgname=appmon
-pkgver=0.3.3
+pkgver=0.3.4
 pkgrel=1
 pkgdesc="Terminal monitor that aggregates RAM and CPU usage per application"
 arch=('any')
 url="https://github.com/knight-artorias0/application-ram-monitor"
 license=('MIT')
 depends=('python' 'python-textual')
-optdepends=('nvidia-utils: NVIDIA driver tools for GPU stats fallback')
+optdepends=('nvidia-utils: recommended NVIDIA GPU stats via nvidia-smi fallback')
 makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel')
 _nvml_py_ver=13.610.43
 source=(

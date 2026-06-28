@@ -11,7 +11,7 @@ from textual.containers import Container
 from textual.widgets import Footer, Header, Input, Static
 
 from appmon.metrics import AppGroup, MetricsCollector, SystemSnapshot
-from appmon.tui.formatting import format_bitrate, format_bytes, format_network, format_percent
+from appmon.tui.formatting import format_bytes, format_gpu, format_network, format_network_speed, format_percent
 from appmon.tui.monitor_table import MonitorTable
 
 
@@ -32,16 +32,11 @@ class SummaryBar(Static):
         parts = [f"Memory: {used} / {total}", f"CPU: {cpu}"]
         if snapshot.gpu_available:
             parts.append(f"GPU: {format_percent(snapshot.total_gpu_percent)}")
-        if snapshot.network_accounting:
-            parts.append(
-                f"Net: ↓{format_bitrate(snapshot.total_net_down_bps)} "
-                f"↑{format_bitrate(snapshot.total_net_up_bps)}"
-            )
-        else:
-            parts.append(
-                f"Net: ↓{format_bitrate(snapshot.total_net_down_bps)} "
-                f"↑{format_bitrate(snapshot.total_net_up_bps)} (system)"
-            )
+        net_suffix = "~" if snapshot.network_estimated else ""
+        parts.append(
+            f"Net: ↓{format_network_speed(snapshot.total_net_down_bps)}{net_suffix} "
+            f"↑{format_network_speed(snapshot.total_net_up_bps)}{net_suffix}"
+        )
         if snapshot.pss_fallback:
             parts.append("(RSS fallback)")
         text = "   ".join(parts)
@@ -103,7 +98,7 @@ class AppMonitorApp(App):
         self.filter_text = ""
         self._display_order: list[str] = []
         self._groups_by_key: dict[str, AppGroup] = {}
-        self._network_accounting = False
+        self._network_estimated = False
         self._gpu_available = False
         self._last_detail_text = ""
 
@@ -181,9 +176,18 @@ class AppMonitorApp(App):
                     net_up_bps=proc.net_up_bps,
                     socket_count=proc.socket_count,
                 ),
-                self._network_accounting,
+                estimated=self._network_estimated,
             )
-            gpu = format_percent(proc.gpu_percent) if self._gpu_available else "-"
+            gpu = format_gpu(
+                AppGroup(
+                    key=group.key,
+                    display_name=group.display_name,
+                    source=group.source,
+                    gpu_percent=proc.gpu_percent,
+                    gpu_mem_bytes=proc.gpu_mem_bytes,
+                ),
+                self._gpu_available,
+            )
             lines.append(
                 f"{proc.pid:<8} {format_bytes(proc.pss_bytes):>10} "
                 f"{format_percent(proc.cpu_percent):>8} {gpu:>8} {net:<20} {proc.comm}"
@@ -208,7 +212,7 @@ class AppMonitorApp(App):
         self.query_one("#summary", SummaryBar).update_snapshot(snapshot)
 
         self._groups_by_key = {group.key: group for group in snapshot.groups}
-        self._network_accounting = snapshot.network_accounting
+        self._network_estimated = snapshot.network_estimated
         self._gpu_available = snapshot.gpu_available
 
         visible = self._sync_display_order(self._filtered_groups(snapshot.groups), reorder=reorder)
@@ -217,7 +221,7 @@ class AppMonitorApp(App):
             table.set_rows(
                 visible,
                 gpu_available=snapshot.gpu_available,
-                network_accounting=snapshot.network_accounting,
+                network_estimated=snapshot.network_estimated,
             )
             selected = table.selected_key
             if selected and selected in self._groups_by_key:

@@ -24,24 +24,38 @@ def format_percent(value: float) -> str:
     return f"{value:5.1f}%"
 
 
-def format_bitrate(bps: float) -> str:
+def format_network_speed(bps: float) -> str:
+    """Format bits-per-second as Mbps or Gbps."""
     if bps <= 0:
-        return "0 bps"
-    units = ("bps", "Kbps", "Mbps", "Gbps")
-    value = float(bps)
-    unit = units[0]
-    for unit in units:
-        if value < 1000 or unit == units[-1]:
-            break
-        value /= 1000
-    if unit == "bps":
-        return f"{int(value)} {unit}"
-    return f"{value:.1f} {unit}"
+        return "0 Mbps"
+    mbps = bps / 1_000_000
+    if mbps >= 1000:
+        return f"{mbps / 1000:.2f} Gbps"
+    if mbps >= 100:
+        return f"{mbps:.0f} Mbps"
+    if mbps >= 10:
+        return f"{mbps:.1f} Mbps"
+    return f"{mbps:.2f} Mbps"
 
 
-def format_network(group: AppGroup, accounting: bool) -> str:
-    if accounting:
-        return f"↓{format_bitrate(group.net_down_bps)} ↑{format_bitrate(group.net_up_bps)}"
+def format_gpu(group: AppGroup, gpu_available: bool) -> str:
+    if not gpu_available:
+        return "-"
+    parts: list[str] = []
+    if group.gpu_percent > 0:
+        parts.append(f"{group.gpu_percent:.1f}%")
+    if group.gpu_mem_bytes > 0:
+        parts.append(format_bytes(group.gpu_mem_bytes))
+    return " ".join(parts) if parts else "0%"
+
+
+def format_network(group: AppGroup, *, estimated: bool = False) -> str:
+    suffix = "~" if estimated else ""
+    if group.net_down_bps > 0 or group.net_up_bps > 0:
+        return (
+            f"↓{format_network_speed(group.net_down_bps)}{suffix} "
+            f"↑{format_network_speed(group.net_up_bps)}{suffix}"
+        )
     if group.socket_count > 0:
         return f"{group.socket_count} sock"
     return "-"

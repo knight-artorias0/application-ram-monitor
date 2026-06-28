@@ -6,7 +6,7 @@ import os
 import time
 from dataclasses import dataclass, field
 
-from appmon.gpu import nvidia_available, sample_gpu_by_pid
+from appmon.gpu import GpuProcessStats, nvidia_available, sample_gpu_by_pid, sample_total_gpu_util
 from appmon.grouping import GroupKey, build_parent_exe_index, resolve_group
 from appmon.network import cgroup_has_ip_accounting, read_cgroup_network_bytes, read_socket_count, read_system_network_totals
 from appmon.proc import CLK_TCK, ProcessInfo, collect_process, list_pids, read_meminfo
@@ -53,6 +53,7 @@ class SystemSnapshot:
     total_net_up_bps: float
     gpu_available: bool
     network_accounting: bool
+    network_estimated: bool
     pss_fallback: bool = False
 
 
@@ -65,6 +66,7 @@ class MetricsCollector:
         self._cpu_count = os.cpu_count() or 1
         self._pss_fallback = False
         self._network_accounting = False
+        self._network_estimated = False
 
     def _cpu_percent(
         self,
@@ -110,8 +112,11 @@ class MetricsCollector:
         elapsed = 0.0 if self._prev_time is None else now - self._prev_time
         self._prev_time = now
         self._network_accounting = False
+        self._network_estimated = False
 
-        gpu_by_pid = sample_gpu_by_pid() if nvidia_available() else {}
+        gpu_by_pid: dict[int, GpuProcessStats] = {}
+        if nvidia_available():
+            gpu_by_pid = sample_gpu_by_pid()
 
         processes: list[ProcessInfo] = []
         for pid in list_pids():
@@ -181,17 +186,36 @@ class MetricsCollector:
         used_mem = max(total_mem - available_mem, 0)
         groups = list(grouped.values())
         total_cpu = sum(group.cpu_percent for group in groups)
-        total_gpu = sum(group.gpu_percent for group in groups)
+        per_pid_gpu = sum(group.gpu_percent for group in groups)
+        total_gpu = per_pid_gpu if per_pid_gpu > 0 else sample_total_gpu_util()
         total_down = sum(group.net_down_bps for group in groups)
         total_up = sum(group.net_up_bps for group in groups)
 
-        if not self._network_accounting:
-            system_rx, system_tx = read_system_network_totals()
-            prev_system = self._prev_system_net
-            self._prev_system_net = (system_rx, system_tx)
-            if prev_system is not None and elapsed > 0:
-                total_down = max(system_rx - prev_system[0], 0) * 8 / elapsed
-                total_up = max(system_tx - prev_system[1], 0) * 8 / elapsed
+        system_down = 0.0
+        system_up = 0.0
+        system_rx, system_tx = read_system_network_totals()
+        prev_system = self._prev_system_net
+        self._prev_system_net = (system_rx, system_tx)
+        if prev_system is not None and elapsed > 0:
+            system_down = max(system_rx - prev_system[0], 0) * 8 / elapsed
+            system_up = max(system_tx - prev_system[1], 0) * 8 / elapsed
+
+        if not self._network_accounting and elapsed > 0:
+            total_sockets = sum(group.socket_count for group in groups)
+            if total_sockets > 0 and (system_down > 0 or system_up > 0):
+                for group in groups:
+                    share = group.socket_count / total_sockets
+                    group.net_down_bps = system_down * share
+                    group.net_up_bps = system_up * share
+                    for proc in group.processes:
+                        proc.net_down_bps = group.net_down_bps / max(group.process_count, 1)
+                        proc.net_up_bps = group.net_up_bps / max(group.process_count, 1)
+                self._network_estimated = True
+            total_down = system_down
+            total_up = system_up
+        elif not self._network_accounting:
+            total_down = system_down
+            total_up = system_up
 
         return SystemSnapshot(
             groups=groups,
@@ -204,5 +228,6 @@ class MetricsCollector:
             total_net_up_bps=total_up,
             gpu_available=nvidia_available(),
             network_accounting=self._network_accounting,
+            network_estimated=self._network_estimated,
             pss_fallback=self._pss_fallback,
         )

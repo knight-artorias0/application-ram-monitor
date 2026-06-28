@@ -10,7 +10,7 @@ from textual.message import Message
 from textual.widgets import Static
 
 from appmon.metrics import AppGroup
-from appmon.tui.formatting import format_bytes, format_network, format_percent
+from appmon.tui.formatting import format_bytes, format_gpu, format_network, format_network_speed, format_percent
 
 
 class MonitorTable(Static, can_focus=True):
@@ -44,7 +44,7 @@ class MonitorTable(Static, can_focus=True):
         self._selected_key: str | None = None
         self._scroll_top = 0
         self._gpu_available = False
-        self._network_accounting = False
+        self._network_estimated = False
         self._visible_rows = 18
         self._last_signature: tuple[tuple, ...] = ()
 
@@ -57,11 +57,11 @@ class MonitorTable(Static, can_focus=True):
         rows: list[AppGroup],
         *,
         gpu_available: bool,
-        network_accounting: bool,
+        network_estimated: bool,
     ) -> None:
         self._rows = rows
         self._gpu_available = gpu_available
-        self._network_accounting = network_accounting
+        self._network_estimated = network_estimated
 
         keys = {row.key for row in rows}
         if self._selected_key not in keys:
@@ -135,18 +135,13 @@ class MonitorTable(Static, can_focus=True):
             app_name = Text(f"{marker}{row.display_name}")
             if selected:
                 app_name.stylize("reverse bold")
-            gpu = "-"
-            if self._gpu_available:
-                if row.gpu_mem_bytes > 0 and row.gpu_percent <= 0:
-                    gpu = format_bytes(row.gpu_mem_bytes)
-                else:
-                    gpu = format_percent(row.gpu_percent)
+            gpu = format_gpu(row, self._gpu_available)
             cells = [
                 app_name,
                 format_bytes(row.pss_bytes),
                 format_percent(row.cpu_percent),
                 gpu,
-                format_network(row, self._network_accounting),
+                format_network(row, estimated=self._network_estimated),
                 str(row.process_count),
             ]
             if selected:

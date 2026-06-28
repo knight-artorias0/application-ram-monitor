@@ -51,9 +51,25 @@ def _merge_stat(
 ) -> None:
     current = stats.get(pid, GpuProcessStats(0.0, 0))
     stats[pid] = GpuProcessStats(
-        gpu_percent=gpu_percent if gpu_percent is not None else current.gpu_percent,
-        gpu_mem_bytes=gpu_mem_bytes if gpu_mem_bytes is not None else current.gpu_mem_bytes,
+        gpu_percent=max(
+            current.gpu_percent,
+            gpu_percent if gpu_percent is not None else current.gpu_percent,
+        ),
+        gpu_mem_bytes=max(
+            current.gpu_mem_bytes,
+            gpu_mem_bytes if gpu_mem_bytes is not None else current.gpu_mem_bytes,
+        ),
     )
+
+
+def _merge_stats(target: dict[int, GpuProcessStats], source: dict[int, GpuProcessStats]) -> None:
+    for pid, sample in source.items():
+        _merge_stat(
+            target,
+            pid,
+            gpu_percent=sample.gpu_percent,
+            gpu_mem_bytes=sample.gpu_mem_bytes,
+        )
 
 
 def _sample_via_nvml() -> dict[int, GpuProcessStats]:
@@ -63,36 +79,44 @@ def _sample_via_nvml() -> dict[int, GpuProcessStats]:
     device_count = pynvml.nvmlDeviceGetCount()
     for index in range(device_count):
         handle = pynvml.nvmlDeviceGetHandleByIndex(index)
-        for getter in (
-            pynvml.nvmlDeviceGetComputeRunningProcesses,
-            pynvml.nvmlDeviceGetGraphicsRunningProcesses,
+
+        process_lists = []
+        for getter_name in (
+            "nvmlDeviceGetComputeRunningProcesses_v3",
+            "nvmlDeviceGetGraphicsRunningProcesses_v3",
+            "nvmlDeviceGetComputeRunningProcesses",
+            "nvmlDeviceGetGraphicsRunningProcesses",
         ):
+            getter = getattr(pynvml, getter_name, None)
+            if getter is None:
+                continue
             try:
-                processes = getter(handle)
+                process_lists.append(getter(handle))
             except pynvml.NVMLError:
                 continue
-            for process in processes:
-                if process.usedGpuMemory in (
-                    None,
-                    pynvml.NVML_VALUE_NOT_AVAILABLE,
-                ):
-                    continue
-                _merge_stat(
-                    stats,
-                    process.pid,
-                    gpu_mem_bytes=int(process.usedGpuMemory),
-                )
 
-        try:
-            samples = pynvml.nvmlDeviceGetProcessUtilization(handle, 0)
-        except (pynvml.NVMLError, AttributeError):
-            continue
-        for sample in samples:
-            _merge_stat(
-                stats,
-                sample.pid,
-                gpu_percent=float(sample.smUtil),
-            )
+        for processes in process_lists:
+            for process in processes:
+                mem = getattr(process, "usedGpuMemory", None)
+                if mem in (None, pynvml.NVML_VALUE_NOT_AVAILABLE):
+                    continue
+                _merge_stat(stats, int(process.pid), gpu_mem_bytes=int(mem))
+
+        for util_getter_name in (
+            "nvmlDeviceGetProcessUtilization",
+            "nvmlDeviceGetProcessUtilization_v2",
+        ):
+            getter = getattr(pynvml, util_getter_name, None)
+            if getter is None:
+                continue
+            try:
+                samples = getter(handle, 0)
+            except (pynvml.NVMLError, AttributeError, TypeError):
+                continue
+            for sample in samples:
+                sm = float(getattr(sample, "smUtil", 0) or 0)
+                _merge_stat(stats, int(sample.pid), gpu_percent=sm)
+
     return stats
 
 
@@ -106,7 +130,7 @@ def _run_nvidia_smi(*args: str) -> str:
             check=False,
             capture_output=True,
             text=True,
-            timeout=2.0,
+            timeout=3.0,
         )
     except (OSError, subprocess.TimeoutExpired):
         return ""
@@ -115,52 +139,103 @@ def _run_nvidia_smi(*args: str) -> str:
     return result.stdout
 
 
+def _parse_smi_memory(value: str) -> int:
+    value = value.strip()
+    if not value or value in {"[N/A]", "N/A"}:
+        return 0
+    try:
+        return int(float(value) * 1024 * 1024)
+    except ValueError:
+        return 0
+
+
 def _sample_via_nvidia_smi() -> dict[int, GpuProcessStats]:
     stats: dict[int, GpuProcessStats] = {}
 
-    pmon = _run_nvidia_smi("pmon", "-c", "1", "-s", "u")
+    pmon = _run_nvidia_smi("pmon", "-c", "1", "-s", "um")
     for line in pmon.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         parts = line.split()
-        if len(parts) < 4:
+        if len(parts) < 5:
             continue
         try:
             pid = int(parts[1])
             sm = float(parts[3])
+            mem_percent = float(parts[4])
         except ValueError:
             continue
-        _merge_stat(stats, pid, gpu_percent=stats.get(pid, GpuProcessStats(0.0, 0)).gpu_percent + sm)
+        _merge_stat(stats, pid, gpu_percent=sm)
+        if mem_percent > 0 and stats[pid].gpu_mem_bytes == 0:
+            # pmon only exposes %, keep util at least.
+            _merge_stat(stats, pid, gpu_percent=mem_percent)
 
-    query = _run_nvidia_smi(
-        "--query-compute-apps=pid,used_gpu_memory",
-        "--format=csv,noheader,nounits",
-    )
-    for line in query.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        parts = [part.strip() for part in line.split(",")]
-        if len(parts) != 2:
-            continue
-        try:
-            pid = int(parts[0])
-            mem_mib = float(parts[1])
-        except ValueError:
-            continue
-        current = stats.get(pid, GpuProcessStats(0.0, 0)).gpu_mem_bytes
-        _merge_stat(stats, pid, gpu_mem_bytes=current + int(mem_mib * 1024 * 1024))
+    for query in (
+        ("--query-apps=pid,used_gpu_memory",),
+        ("--query-compute-apps=pid,used_gpu_memory",),
+        ("--query-graphics-apps=pid,used_gpu_memory",),
+    ):
+        output = _run_nvidia_smi(*query, "--format=csv,noheader,nounits")
+        for line in output.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = [part.strip() for part in line.split(",")]
+            if len(parts) < 2:
+                continue
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            mem = _parse_smi_memory(parts[1])
+            if mem:
+                _merge_stat(stats, pid, gpu_mem_bytes=mem)
 
     return stats
 
 
-def sample_gpu_by_pid() -> dict[int, GpuProcessStats]:
-    """Return per-PID GPU utilization and VRAM."""
+def sample_total_gpu_util() -> float:
+    output = _run_nvidia_smi(
+        "--query-gpu=utilization.gpu",
+        "--format=csv,noheader,nounits",
+    )
+    total = 0.0
+    for line in output.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            total += float(line)
+        except ValueError:
+            continue
+    if total > 0:
+        return total
+
     if _try_init_nvml():
-        stats = _sample_via_nvml()
-        if stats:
-            return stats
+        import pynvml  # type: ignore[import-untyped]
+
+        try:
+            for index in range(pynvml.nvmlDeviceGetCount()):
+                handle = pynvml.nvmlDeviceGetHandleByIndex(index)
+                util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                total += float(util.gpu)
+        except Exception:
+            return 0.0
+    return total
+
+
+def sample_gpu_by_pid() -> dict[int, GpuProcessStats]:
+    """Return per-PID GPU utilization and VRAM from all available backends."""
+    stats: dict[int, GpuProcessStats] = {}
+    if _try_init_nvml():
+        _merge_stats(stats, _sample_via_nvml())
     if _nvidia_smi_path() is not None:
-        return _sample_via_nvidia_smi()
-    return {}
+        _merge_stats(stats, _sample_via_nvidia_smi())
+    return stats
+
+
+def gpu_data_available(stats: dict[int, GpuProcessStats]) -> bool:
+    if stats:
+        return True
+    return sample_total_gpu_util() > 0

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 
 from appmon.proc import PROC_ROOT, _read_text
@@ -28,23 +27,30 @@ def _read_int(path: Path) -> int:
         return 0
 
 
-@lru_cache(maxsize=256)
-def _cgroup_has_ip_accounting(cgroup_path: str) -> bool:
+def _cgroup_candidates(cgroup_path: str) -> list[Path]:
     if not cgroup_path:
-        return False
-    base = CGROUP_ROOT / cgroup_path.lstrip("/")
-    return (base / "ip-ingress.bytes").is_file() and (base / "ip-egress.bytes").is_file()
+        return []
+    parts = [part for part in cgroup_path.strip("/").split("/") if part]
+    candidates: list[Path] = []
+    for end in range(len(parts), 0, -1):
+        candidates.append(CGROUP_ROOT / "/".join(parts[:end]))
+    return candidates
 
 
 def cgroup_has_ip_accounting(cgroup_path: str) -> bool:
-    return _cgroup_has_ip_accounting(cgroup_path)
+    for base in _cgroup_candidates(cgroup_path):
+        if (base / "ip-ingress.bytes").is_file() and (base / "ip-egress.bytes").is_file():
+            return True
+    return False
 
 
 def read_cgroup_network_bytes(cgroup_path: str) -> tuple[int, int]:
-    if not cgroup_path or not _cgroup_has_ip_accounting(cgroup_path):
-        return 0, 0
-    base = CGROUP_ROOT / cgroup_path.lstrip("/")
-    return _read_int(base / "ip-ingress.bytes"), _read_int(base / "ip-egress.bytes")
+    for base in _cgroup_candidates(cgroup_path):
+        ingress = base / "ip-ingress.bytes"
+        egress = base / "ip-egress.bytes"
+        if ingress.is_file() and egress.is_file():
+            return _read_int(ingress), _read_int(egress)
+    return 0, 0
 
 
 def read_socket_count(pid: int) -> int:

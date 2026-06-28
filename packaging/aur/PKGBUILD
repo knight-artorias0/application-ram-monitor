@@ -21,7 +21,8 @@ sha256sums=('SKIP' 'f13c72698edef492f985cc225f14faafe68ae065a2e407f45bdf6f4b9b43
 build() {
   cd appmon
   python -m build --wheel --no-isolation
-  python -m pip wheel nvidia-ml-py -w dist --no-deps
+  mkdir -p dist
+  cp "../nvidia_ml_py-${_nvml_py_ver}-py3-none-any.whl" dist/
 }
 
 package() {
